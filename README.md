@@ -107,8 +107,13 @@ The 16 tests cover goal handling, the request sent to the model, falling back to
 
 ## Time saved
 
-<!-- Fill this in after timing one batch by hand and one with the workflow. -->
-To be measured: time for one batch of feedback by hand versus with this workflow.
+About 40 minutes per batch of feedback.
+
+| | Time per batch |
+| --- | --- |
+| By hand: themes with quotes, user stories, stakeholder email, risks | About 45 minutes (my estimate) |
+| With the workflow: the run itself, unattended | 1 to 2 minutes |
+| With the workflow: reading and checking the brief | About 5 minutes |
 
 ## How it was built
 

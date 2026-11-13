@@ -1,0 +1,40 @@
+{
+  "_note": "Hand-written test fixture. It stands in for a model reply so the tests run without an API key. It is not real model output.",
+  "insights": [
+    {
+      "theme": "Costs are not clear until the end",
+      "summary": "Students lose trust when the price or what it includes changes late in the booking.",
+      "evidence": [
+        "The total price changed between the listing page and the payment page and nobody explained why.",
+        "Please show the full cost upfront."
+      ]
+    },
+    {
+      "theme": "Document upload fails on mobile",
+      "summary": "Repeated upload failures block students who are otherwise ready to book.",
+      "evidence": [
+        "I uploaded my passport twice and the page still says document missing.",
+        "The upload button is broken on every phone."
+      ]
+    }
+  ],
+  "user_stories": [
+    {
+      "title": "Show the full cost on the listing page",
+      "story": "As a student comparing rooms, I want to see the full cost on the listing page, so that the payment page holds no surprises.",
+      "acceptance_criteria": [
+        "The listing page shows rent, deposit and every fee.",
+        "The payment page total equals the listing page total."
+      ]
+    }
+  ],
+  "stakeholder_email": {
+    "subject": "Booking drop-off: what students told us",
+    "body": "Hi team,\n\nTwo themes stand out in this batch of feedback: unclear costs and failed document uploads.\n\nThanks"
+  },
+  "risks": [
+    {"risk": "Fee data differs between systems", "severity": "Medium", "mitigation": "Audit the fee fields before building."},
+    {"risk": "Upload fix needs a vendor change", "severity": "High", "mitigation": "Confirm vendor timelines this week."},
+    {"risk": "Scope grows beyond one sprint", "severity": "Low", "mitigation": "Ship the cost summary first."}
+  ]
+}

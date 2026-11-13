@@ -1,0 +1,60 @@
+name: PM Employee
+
+# Runs when new feedback is added, every Monday morning, or on demand.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "feedback/**"
+  schedule:
+    - cron: "30 3 * * 1" # Mondays 03:30 UTC = 09:00 India time
+  workflow_dispatch:
+    inputs:
+      rebuild_all:
+        description: "Rebuild briefs for every feedback file"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write # needed to save the briefs back to the repository
+
+concurrency:
+  group: pm-employee
+  cancel-in-progress: false
+
+jobs:
+  brief:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Write sprint briefs
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          PM_EMPLOYEE_MODEL: ${{ vars.PM_EMPLOYEE_MODEL || 'claude-sonnet-5-5' }}
+          REBUILD_ALL: ${{ inputs.rebuild_all }}
+        run: |
+          if [ "$REBUILD_ALL" = "true" ]; then
+            python pm_employee.py --all
+          else
+            python pm_employee.py
+          fi
+
+      - name: Save briefs to the repository
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add reports
+          if git diff --cached --quiet; then
+            echo "No new briefs to save."
+          else
+            git commit -m "Add sprint briefs from PM Employee"
+            git push
+          fi

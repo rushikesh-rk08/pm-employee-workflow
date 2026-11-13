@@ -151,14 +151,24 @@ def call_github_models(goal: str, feedback: str, model: str) -> str:
         headers={
             "Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}",
             "Content-Type": "application/json",
-            "Accept": "application/json",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "pm-employee-workflow",
         },
     )
     for attempt in (1, 2):
         try:
             with urllib.request.urlopen(request, timeout=120) as response:
-                reply = json.loads(response.read().decode("utf-8"))
-            return reply["choices"][0]["message"]["content"]
+                status = response.status
+                kind = response.headers.get("Content-Type", "unknown")
+                text = response.read().decode("utf-8", "replace")
+            try:
+                return json.loads(text)["choices"][0]["message"]["content"]
+            except (ValueError, KeyError, IndexError, TypeError) as error:
+                raise RuntimeError(
+                    f"GitHub Models gave an unexpected answer for {model} "
+                    f"(status {status}, type {kind}): {text[:300]!r}"
+                ) from error
         except urllib.error.HTTPError as error:
             detail = error.read().decode("utf-8", "replace")[:300]
             if error.code in (429, 500, 502, 503) and attempt == 1:

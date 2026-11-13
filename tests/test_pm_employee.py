@@ -151,6 +151,8 @@ def test_github_models_request_shape(monkeypatch):
     seen = {}
 
     class FakeResponse:
+        status = 200
+        headers = {"Content-Type": "application/json"}
         def __enter__(self): return self
         def __exit__(self, *args): return False
         def read(self):

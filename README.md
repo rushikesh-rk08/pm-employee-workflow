@@ -1,6 +1,6 @@
 # PM Employee
 
-Drop raw customer feedback into this repository and get a sprint brief back: insights with evidence, user stories, a stakeholder email and the top three risks. It runs entirely on GitHub Actions. There is no app to open and nothing to install.
+Drop raw customer feedback into this repository and get a sprint brief back: insights with evidence, user stories, a stakeholder email and the top three risks. It runs entirely on GitHub Actions, using GitHub's free AI models. There is no app to open, nothing to install and no API key to buy.
 
 ## What it does
 
@@ -24,14 +24,14 @@ feedback/new-file.md is added      (or it is Monday 09:00 India time, or you pre
         |
 GitHub Actions starts pm_employee.py
         |
-The script sends the goal and the feedback to Claude through the Anthropic API
+The script sends the goal and the feedback to an AI model through GitHub Models
         |
 Every evidence quote is checked against the original feedback
         |
 reports/new-file.md is saved back to the repository and shown on the run's summary page
 ```
 
-The script only writes briefs for feedback files that do not have one yet, so the Monday run costs nothing when there is no new feedback.
+The script only writes briefs for feedback files that do not have one yet, so the Monday run does nothing when there is no new feedback.
 
 ## The evidence check
 
@@ -53,24 +53,34 @@ The sample feedback is invented for this demonstration. It does not come from a 
 
 ## Set it up in your own repository
 
-1. Create an API key at the Anthropic Console.
-2. In the repository, go to **Settings > Secrets and variables > Actions** and add a secret named `ANTHROPIC_API_KEY`.
-3. Add a feedback file to `feedback/` and push it. The brief appears in `reports/` about a minute later.
+1. Copy this repository.
+2. Add a feedback file to `feedback/` and push it. The brief appears in `reports/` about a minute later.
+
+That is all. Inside GitHub Actions the workflow uses [GitHub Models](https://docs.github.com/en/github-models), which is free within rate limits and signs in with the token GitHub gives every workflow run. The one line that enables it is `models: read` in the workflow's permissions.
 
 To set the product goal, start a feedback file with a line such as `Goal: Reduce checkout drop-off`. Files without that line use the goal in [`goal.md`](goal.md).
 
-The model defaults to `claude-sonnet-5-5`. To change it, add a repository variable named `PM_EMPLOYEE_MODEL`.
+### Choosing the model
+
+| Setting | Effect |
+| --- | --- |
+| Nothing set | Tries `openai/gpt-4o-mini`, then `openai/gpt-4.1-mini`, on GitHub Models |
+| Repository variable `PM_EMPLOYEE_MODEL` | Uses that model instead |
+| Repository secret `ANTHROPIC_API_KEY` | Uses Claude through the Anthropic API (paid) instead of GitHub Models |
+
+Each brief names the model that wrote it.
 
 ## Run it on your own machine
 
+Create a GitHub personal access token with the **Models: read** permission, then:
+
 ```
-pip install -r requirements.txt
-export ANTHROPIC_API_KEY=your-key
+export GITHUB_TOKEN=your-token
 python pm_employee.py            # briefs for new feedback files
 python pm_employee.py --all      # rebuild every brief
 ```
 
-To try it without an API key, use the saved test reply:
+To try it with no token at all, use the saved test reply:
 
 ```
 python pm_employee.py --mock tests/fixtures/mock_reply.json
@@ -83,13 +93,13 @@ pip install pytest
 pytest
 ```
 
-The 11 tests cover goal handling, parsing the model's reply, the evidence check, the report layout and a full run using a saved reply. They need no API key and run on every push.
+The 14 tests cover goal handling, the request sent to the model, falling back to a second model, parsing the reply, the evidence check, the report layout and a full run using a saved reply. They need no token and run on every push.
 
 ## Files
 
 | File | Purpose |
 | --- | --- |
-| `pm_employee.py` | The whole workflow: read feedback, call Claude, check quotes, write the brief |
+| `pm_employee.py` | The whole workflow: read feedback, call the AI model, check quotes, write the brief |
 | `.github/workflows/pm-employee.yml` | Runs the script on new feedback, on Mondays and on demand |
 | `.github/workflows/tests.yml` | Runs the tests on every push |
 | `feedback/` | Input: one file per batch of feedback |
@@ -110,4 +120,5 @@ I defined the workflow, its four outputs and the evidence-check rule. The code w
 
 - The brief is a first draft. A person should read it before anything is sent or scheduled.
 - The evidence check confirms a quote exists in the feedback. It does not judge whether the theme drawn from it is right.
+- GitHub Models is free within rate limits, and its list of models changes over time. If the default models are retired, set `PM_EMPLOYEE_MODEL` to a current one.
 - GitHub pauses scheduled workflows in repositories with no activity for 60 days.

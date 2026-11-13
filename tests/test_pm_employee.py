@@ -112,7 +112,60 @@ def test_end_to_end_with_mock_reply(tmp_path, monkeypatch):
     assert pm.pending_feedback(redo_all=True) == [feedback_dir / "batch.md"]
 
 
-def test_missing_api_key_stops_with_a_clear_message(monkeypatch, capsys):
+def test_no_ai_access_stops_with_a_clear_message(monkeypatch, capsys):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     assert pm.main([]) == 2
-    assert "ANTHROPIC_API_KEY" in capsys.readouterr().err
+    assert "GITHUB_TOKEN" in capsys.readouterr().err
+
+
+def test_provider_choice(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("GITHUB_TOKEN", "t")
+    assert pm.choose_provider() == "github"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    assert pm.choose_provider() == "claude"
+
+
+def test_falls_back_to_the_next_free_model(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("PM_EMPLOYEE_MODEL", raising=False)
+    monkeypatch.setenv("GITHUB_TOKEN", "t")
+    tried = []
+
+    def fake_call(goal, feedback, model):
+        tried.append(model)
+        if len(tried) == 1:
+            raise RuntimeError("unknown model")
+        return "{}"
+
+    monkeypatch.setattr(pm, "call_github_models", fake_call)
+    raw, model = pm.call_model("goal", "feedback")
+    assert raw == "{}"
+    assert tried == pm.GITHUB_DEFAULT_MODELS[:2]
+    assert model == f"{pm.GITHUB_DEFAULT_MODELS[1]} (GitHub Models)"
+
+
+def test_github_models_request_shape(monkeypatch):
+    monkeypatch.setenv("GITHUB_TOKEN", "secret-token")
+    seen = {}
+
+    class FakeResponse:
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def read(self):
+            return json.dumps({"choices": [{"message": {"content": "hello"}}]}).encode()
+
+    def fake_urlopen(request, timeout):
+        seen["url"] = request.full_url
+        seen["auth"] = request.get_header("Authorization")
+        seen["body"] = json.loads(request.data)
+        return FakeResponse()
+
+    monkeypatch.setattr(pm.urllib.request, "urlopen", fake_urlopen)
+    assert pm.call_github_models("goal", "feedback text", "some/model") == "hello"
+    assert seen["url"] == pm.GITHUB_MODELS_URL
+    assert seen["auth"] == "Bearer secret-token"
+    assert seen["body"]["model"] == "some/model"
+    assert [m["role"] for m in seen["body"]["messages"]] == ["system", "user"]
+    assert "feedback text" in seen["body"]["messages"][1]["content"]

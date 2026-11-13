@@ -1,6 +1,6 @@
 """PM Employee: turn raw customer feedback into a sprint brief.
 
-Reads every file in feedback/, sends it to Claude with the product goal,
+Reads every file in feedback/, sends it to an AI model with the product goal,
 and writes a Markdown brief to reports/ containing:
 
   1. Insights      - themes, each backed by quotes from the feedback
@@ -11,9 +11,12 @@ and writes a Markdown brief to reports/ containing:
 Every evidence quote is checked against the original feedback. A quote the
 model did not copy word for word is flagged in the brief, not hidden.
 
-Run locally:   python pm_employee.py
+The AI model comes from GitHub Models, which is free and needs no API key
+inside GitHub Actions. If an ANTHROPIC_API_KEY is set, Claude is used instead.
+
 Run on GitHub: the workflow in .github/workflows/pm-employee.yml does this
                on every new feedback file and every Monday morning.
+Run locally:   python pm_employee.py   (see the README for the token it needs)
 """
 
 from __future__ import annotations
@@ -24,6 +27,9 @@ import json
 import os
 import re
 import sys
+import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -31,7 +37,10 @@ FEEDBACK_DIR = ROOT / "feedback"
 REPORTS_DIR = ROOT / "reports"
 GOAL_FILE = ROOT / "goal.md"
 
-DEFAULT_MODEL = "claude-sonnet-5-5"
+GITHUB_MODELS_URL = "https://models.github.ai/inference/chat/completions"
+# Tried in order until one answers; the catalogue of free models changes over time.
+GITHUB_DEFAULT_MODELS = ["openai/gpt-4o-mini", "openai/gpt-4.1-mini"]
+CLAUDE_DEFAULT_MODEL = "claude-sonnet-5-5"
 MAX_TOKENS = 4000
 FEEDBACK_SUFFIXES = {".md", ".txt"}
 SEVERITIES = ("High", "Medium", "Low")
@@ -108,7 +117,7 @@ def report_path(feedback_file: Path) -> Path:
 
 
 # --------------------------------------------------------------------------
-# Talking to Claude
+# Talking to the AI model
 # --------------------------------------------------------------------------
 
 def build_user_message(goal: str, feedback: str) -> str:
@@ -118,11 +127,52 @@ def build_user_message(goal: str, feedback: str) -> str:
     )
 
 
-def call_claude(goal: str, feedback: str, model: str) -> str:
-    """Send the feedback to Claude and return the raw text of its reply."""
-    import anthropic  # imported here so tests run without the package
+def choose_provider() -> str | None:
+    """Claude if an Anthropic key is set, otherwise GitHub Models."""
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        return "claude"
+    if os.environ.get("GITHUB_TOKEN"):
+        return "github"
+    return None
 
-    client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY
+
+def call_github_models(goal: str, feedback: str, model: str) -> str:
+    """Ask one GitHub Models model. Free inside GitHub Actions."""
+    body = json.dumps({
+        "model": model,
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": build_user_message(goal, feedback)},
+        ],
+    }).encode("utf-8")
+    request = urllib.request.Request(
+        GITHUB_MODELS_URL,
+        data=body,
+        headers={
+            "Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+    )
+    for attempt in (1, 2):
+        try:
+            with urllib.request.urlopen(request, timeout=120) as response:
+                reply = json.loads(response.read().decode("utf-8"))
+            return reply["choices"][0]["message"]["content"]
+        except urllib.error.HTTPError as error:
+            detail = error.read().decode("utf-8", "replace")[:300]
+            if error.code in (429, 500, 502, 503) and attempt == 1:
+                time.sleep(30)  # rate limit or a brief outage: wait, try once more
+                continue
+            raise RuntimeError(f"GitHub Models returned {error.code} for {model}: {detail}") from error
+    raise RuntimeError("unreachable")
+
+
+def call_claude(goal: str, feedback: str, model: str) -> str:
+    """Ask Claude through the Anthropic API. Needs ANTHROPIC_API_KEY."""
+    import anthropic  # only needed on this path
+
+    client = anthropic.Anthropic()
     message = client.messages.create(
         model=model,
         max_tokens=MAX_TOKENS,
@@ -130,6 +180,24 @@ def call_claude(goal: str, feedback: str, model: str) -> str:
         messages=[{"role": "user", "content": build_user_message(goal, feedback)}],
     )
     return "".join(b.text for b in message.content if b.type == "text")
+
+
+def call_model(goal: str, feedback: str) -> tuple[str, str]:
+    """Return (raw reply, name of the model that wrote it)."""
+    chosen = os.environ.get("PM_EMPLOYEE_MODEL", "").strip()
+    if choose_provider() == "claude":
+        model = chosen or CLAUDE_DEFAULT_MODEL
+        return call_claude(goal, feedback, model), model
+
+    models = [chosen] if chosen else GITHUB_DEFAULT_MODELS
+    last_error: Exception | None = None
+    for model in models:
+        try:
+            return call_github_models(goal, feedback, model), f"{model} (GitHub Models)"
+        except RuntimeError as error:
+            last_error = error
+            print(f"{error}", file=sys.stderr)
+    raise RuntimeError(f"No model answered. Last error: {last_error}")
 
 
 def parse_reply(raw: str) -> dict:
@@ -264,14 +332,17 @@ def render_report(
 # Running
 # --------------------------------------------------------------------------
 
-def process(feedback_file: Path, model: str, mock_reply: str | None) -> Path:
+def process(feedback_file: Path, mock_reply: str | None) -> Path:
     default_goal = read_default_goal()
     text = strip_comments(feedback_file.read_text(encoding="utf-8"))
     goal, feedback = split_goal(text, default_goal)
     if not feedback:
         raise ValueError(f"{feedback_file.name} has no feedback in it.")
 
-    raw = mock_reply if mock_reply is not None else call_claude(goal, feedback, model)
+    if mock_reply is not None:
+        raw, model = mock_reply, "mock reply (no AI call)"
+    else:
+        raw, model = call_model(goal, feedback)
     data = parse_reply(raw)
     verified, total = check_evidence(data, feedback)
 
@@ -279,7 +350,7 @@ def process(feedback_file: Path, model: str, mock_reply: str | None) -> Path:
         data,
         goal=goal,
         source=feedback_file.name,
-        model="mock reply (no API call)" if mock_reply is not None else model,
+        model=model,
         verified=verified,
         total=total,
         today=dt.datetime.now(dt.timezone.utc).date(),
@@ -300,15 +371,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--all", action="store_true",
                         help="rebuild briefs for every feedback file")
     parser.add_argument("--mock", metavar="FILE",
-                        help="use a saved reply instead of calling the API")
+                        help="use a saved reply instead of calling an AI model")
     args = parser.parse_args(argv)
 
-    model = os.environ.get("PM_EMPLOYEE_MODEL", DEFAULT_MODEL)
     mock_reply = Path(args.mock).read_text(encoding="utf-8") if args.mock else None
 
-    if mock_reply is None and not os.environ.get("ANTHROPIC_API_KEY"):
-        print("ANTHROPIC_API_KEY is not set. Add it as a repository secret "
-              "(or export it locally), or use --mock.", file=sys.stderr)
+    if mock_reply is None and choose_provider() is None:
+        print("No AI access found. Inside GitHub Actions the workflow supplies "
+              "GITHUB_TOKEN. Locally, set GITHUB_TOKEN or ANTHROPIC_API_KEY, "
+              "or use --mock.", file=sys.stderr)
         return 2
 
     files = pending_feedback(args.all)
@@ -319,7 +390,7 @@ def main(argv: list[str] | None = None) -> int:
     failures = 0
     for feedback_file in files:
         try:
-            target = process(feedback_file, model, mock_reply)
+            target = process(feedback_file, mock_reply)
             print(f"Wrote {target.relative_to(ROOT)}")
         except Exception as error:  # keep going so one bad file does not block the rest
             failures += 1

@@ -16,7 +16,8 @@ on:
         default: false
 
 permissions:
-  contents: write # needed to save the briefs back to the repository
+  contents: write # save the briefs back to the repository
+  models: read # free AI access through GitHub Models, no API key needed
 
 concurrency:
   group: pm-employee
@@ -37,8 +38,9 @@ jobs:
 
       - name: Write sprint briefs
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          PM_EMPLOYEE_MODEL: ${{ vars.PM_EMPLOYEE_MODEL || 'claude-sonnet-5-5' }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }} # optional: use Claude instead
+          PM_EMPLOYEE_MODEL: ${{ vars.PM_EMPLOYEE_MODEL }} # optional: pick a model
           REBUILD_ALL: ${{ inputs.rebuild_all }}
         run: |
           if [ "$REBUILD_ALL" = "true" ]; then

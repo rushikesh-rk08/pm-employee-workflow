@@ -29,6 +29,7 @@ import re
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -136,6 +137,52 @@ def choose_provider() -> str | None:
     return None
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Stop urllib from silently turning a redirected POST into a GET."""
+
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+def _post_json(url: str, body: bytes, token: str) -> tuple[int, str, str]:
+    """POST and return (status, content type, text), following redirects
+    as POSTs and only to GitHub's own hosts, so the token never leaves GitHub."""
+    opener = urllib.request.build_opener(_NoRedirect)
+    for _ in range(4):
+        request = urllib.request.Request(
+            url,
+            data=body,
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+                "User-Agent": "pm-employee-workflow",
+            },
+        )
+        try:
+            with opener.open(request, timeout=120) as response:
+                kind = response.headers.get("Content-Type", "unknown")
+                return response.status, kind, response.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as error:
+            if error.code in (301, 302, 303, 307, 308):
+                target = urllib.parse.urljoin(url, error.headers.get("Location", ""))
+                host = urllib.parse.urlparse(target).hostname or ""
+                if not (target.startswith("https://") and
+                        (host.endswith(".github.ai") or host.endswith(".github.com")
+                         or host in ("github.ai", "github.com"))):
+                    raise RuntimeError(
+                        f"GitHub Models redirected to an unexpected address: {target}"
+                    ) from error
+                print(f"Redirected to {target}", file=sys.stderr)
+                url = target
+                continue
+            kind = error.headers.get("Content-Type", "unknown")
+            return error.code, kind, error.read().decode("utf-8", "replace")
+    raise RuntimeError("GitHub Models redirected too many times.")
+
+
 def call_github_models(goal: str, feedback: str, model: str) -> str:
     """Ask one GitHub Models model. Free inside GitHub Actions."""
     body = json.dumps({
@@ -145,37 +192,23 @@ def call_github_models(goal: str, feedback: str, model: str) -> str:
             {"role": "user", "content": build_user_message(goal, feedback)},
         ],
     }).encode("utf-8")
-    request = urllib.request.Request(
-        GITHUB_MODELS_URL,
-        data=body,
-        headers={
-            "Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}",
-            "Content-Type": "application/json",
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-            "User-Agent": "pm-employee-workflow",
-        },
-    )
+    token = os.environ["GITHUB_TOKEN"]
+
     for attempt in (1, 2):
+        status, kind, text = _post_json(GITHUB_MODELS_URL, body, token)
+        if status in (429, 500, 502, 503) and attempt == 1:
+            time.sleep(30)  # rate limit or a brief outage: wait, try once more
+            continue
+        if status != 200:
+            raise RuntimeError(f"GitHub Models returned {status} for {model}: {text[:300]}")
         try:
-            with urllib.request.urlopen(request, timeout=120) as response:
-                status = response.status
-                kind = response.headers.get("Content-Type", "unknown")
-                text = response.read().decode("utf-8", "replace")
-            try:
-                return json.loads(text)["choices"][0]["message"]["content"]
-            except (ValueError, KeyError, IndexError, TypeError) as error:
-                raise RuntimeError(
-                    f"GitHub Models gave an unexpected answer for {model} "
-                    f"(status {status}, type {kind}): {text[:300]!r}"
-                ) from error
-        except urllib.error.HTTPError as error:
-            detail = error.read().decode("utf-8", "replace")[:300]
-            if error.code in (429, 500, 502, 503) and attempt == 1:
-                time.sleep(30)  # rate limit or a brief outage: wait, try once more
-                continue
-            raise RuntimeError(f"GitHub Models returned {error.code} for {model}: {detail}") from error
-    raise RuntimeError("unreachable")
+            return json.loads(text)["choices"][0]["message"]["content"]
+        except (ValueError, KeyError, IndexError, TypeError) as error:
+            raise RuntimeError(
+                f"GitHub Models gave an unexpected answer for {model} "
+                f"(status {status}, type {kind}): {text[:300]!r}"
+            ) from error
+    raise RuntimeError(f"GitHub Models kept returning errors for {model}.")
 
 
 def call_claude(goal: str, feedback: str, model: str) -> str:

@@ -150,24 +150,29 @@ def test_github_models_request_shape(monkeypatch):
     monkeypatch.setenv("GITHUB_TOKEN", "secret-token")
     seen = {}
 
-    class FakeResponse:
-        status = 200
-        headers = {"Content-Type": "application/json"}
-        def __enter__(self): return self
-        def __exit__(self, *args): return False
-        def read(self):
-            return json.dumps({"choices": [{"message": {"content": "hello"}}]}).encode()
+    def fake_post(url, body, token):
+        seen.update(url=url, body=json.loads(body), token=token)
+        return 200, "application/json", json.dumps(
+            {"choices": [{"message": {"content": "hello"}}]})
 
-    def fake_urlopen(request, timeout):
-        seen["url"] = request.full_url
-        seen["auth"] = request.get_header("Authorization")
-        seen["body"] = json.loads(request.data)
-        return FakeResponse()
-
-    monkeypatch.setattr(pm.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(pm, "_post_json", fake_post)
     assert pm.call_github_models("goal", "feedback text", "some/model") == "hello"
     assert seen["url"] == pm.GITHUB_MODELS_URL
-    assert seen["auth"] == "Bearer secret-token"
+    assert seen["token"] == "secret-token"
     assert seen["body"]["model"] == "some/model"
     assert [m["role"] for m in seen["body"]["messages"]] == ["system", "user"]
     assert "feedback text" in seen["body"]["messages"][1]["content"]
+
+
+def test_non_json_answer_is_reported_not_crashed(monkeypatch):
+    monkeypatch.setenv("GITHUB_TOKEN", "t")
+    monkeypatch.setattr(pm, "_post_json", lambda *a: (200, "text/plain", "OK"))
+    with pytest.raises(RuntimeError, match="unexpected answer"):
+        pm.call_github_models("goal", "feedback", "some/model")
+
+
+def test_error_status_is_reported(monkeypatch):
+    monkeypatch.setenv("GITHUB_TOKEN", "t")
+    monkeypatch.setattr(pm, "_post_json", lambda *a: (404, "application/json", "no such model"))
+    with pytest.raises(RuntimeError, match="404"):
+        pm.call_github_models("goal", "feedback", "some/model")

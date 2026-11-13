@@ -1,6 +1,6 @@
 # PM Employee
 
-Drop raw customer feedback into this repository and get a sprint brief back: insights with evidence, user stories, a stakeholder email and the top three risks. It runs entirely on GitHub Actions, using GitHub's free AI models. There is no app to open, nothing to install and no API key to buy.
+Drop raw customer feedback into this repository and get a sprint brief back: insights with evidence, user stories, a stakeholder email and the top three risks. It runs entirely on GitHub Actions, using the free tier of Google's Gemini API. There is no app to open, nothing to install and nothing to pay for.
 
 ## What it does
 
@@ -24,7 +24,7 @@ feedback/new-file.md is added      (or it is Monday 09:00 India time, or you pre
         |
 GitHub Actions starts pm_employee.py
         |
-The script sends the goal and the feedback to an AI model through GitHub Models
+The script sends the goal and the feedback to Gemini through Google's API
         |
 Every evidence quote is checked against the original feedback
         |
@@ -54,9 +54,9 @@ The sample feedback is invented for this demonstration. It does not come from a 
 ## Set it up in your own repository
 
 1. Copy this repository.
-2. Add a feedback file to `feedback/` and push it. The brief appears in `reports/` about a minute later.
-
-That is all. Inside GitHub Actions the workflow uses [GitHub Models](https://docs.github.com/en/github-models), which is free within rate limits and signs in with the token GitHub gives every workflow run. The one line that enables it is `models: read` in the workflow's permissions.
+2. Create a free API key at [Google AI Studio](https://aistudio.google.com/apikey).
+3. In the repository, go to **Settings > Secrets and variables > Actions** and add a secret named `GEMINI_API_KEY`.
+4. Add a feedback file to `feedback/` and push it. The brief appears in `reports/` about a minute later.
 
 To set the product goal, start a feedback file with a line such as `Goal: Reduce checkout drop-off`. Files without that line use the goal in [`goal.md`](goal.md).
 
@@ -64,23 +64,21 @@ To set the product goal, start a feedback file with a line such as `Goal: Reduce
 
 | Setting | Effect |
 | --- | --- |
-| Nothing set | Tries `openai/gpt-4o-mini`, then `openai/gpt-4.1-mini`, on GitHub Models |
+| Secret `GEMINI_API_KEY` only | Tries `gemini-3.8-flash`, then `gemini-3.6-flash`, then `gemini-3.5-flash-lite` |
 | Repository variable `PM_EMPLOYEE_MODEL` | Uses that model instead |
-| Repository secret `ANTHROPIC_API_KEY` | Uses Claude through the Anthropic API (paid) instead of GitHub Models |
+| Secret `ANTHROPIC_API_KEY` | Uses Claude through the Anthropic API (paid) instead of Gemini |
 
 Each brief names the model that wrote it.
 
 ## Run it on your own machine
 
-Create a GitHub personal access token with the **Models: read** permission, then:
-
 ```
-export GITHUB_TOKEN=your-token
+export GEMINI_API_KEY=your-key
 python pm_employee.py            # briefs for new feedback files
 python pm_employee.py --all      # rebuild every brief
 ```
 
-To try it with no token at all, use the saved test reply:
+To try it with no key at all, use the saved test reply:
 
 ```
 python pm_employee.py --mock tests/fixtures/mock_reply.json
@@ -93,7 +91,7 @@ pip install pytest
 pytest
 ```
 
-The 14 tests cover goal handling, the request sent to the model, falling back to a second model, parsing the reply, the evidence check, the report layout and a full run using a saved reply. They need no token and run on every push.
+The 16 tests cover goal handling, the request sent to the model, falling back to a second model, parsing the reply, the evidence check, the report layout and a full run using a saved reply. They need no key and run on every push.
 
 ## Files
 
@@ -120,5 +118,6 @@ I defined the workflow, its four outputs and the evidence-check rule. The code w
 
 - The brief is a first draft. A person should read it before anything is sent or scheduled.
 - The evidence check confirms a quote exists in the feedback. It does not judge whether the theme drawn from it is right.
-- GitHub Models is free within rate limits, and its list of models changes over time. If the default models are retired, set `PM_EMPLOYEE_MODEL` to a current one.
+- Gemini's free tier has rate limits, and its list of free models changes over time. If the default models are retired, set `PM_EMPLOYEE_MODEL` to a current one.
+- Google uses free-tier content to improve its products, so do not put confidential customer feedback through the free tier. Use a paid key for real data.
 - GitHub pauses scheduled workflows in repositories with no activity for 60 days.

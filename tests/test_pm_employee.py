@@ -112,17 +112,17 @@ def test_end_to_end_with_mock_reply(tmp_path, monkeypatch):
     assert pm.pending_feedback(redo_all=True) == [feedback_dir / "batch.md"]
 
 
-def test_no_ai_access_stops_with_a_clear_message(monkeypatch, capsys):
+def test_no_ai_key_stops_with_a_clear_message(monkeypatch, capsys):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     assert pm.main([]) == 2
-    assert "GITHUB_TOKEN" in capsys.readouterr().err
+    assert "GEMINI_API_KEY" in capsys.readouterr().err
 
 
 def test_provider_choice(monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.setenv("GITHUB_TOKEN", "t")
-    assert pm.choose_provider() == "github"
+    monkeypatch.setenv("GEMINI_API_KEY", "g")
+    assert pm.choose_provider() == "gemini"
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
     assert pm.choose_provider() == "claude"
 
@@ -130,7 +130,7 @@ def test_provider_choice(monkeypatch):
 def test_falls_back_to_the_next_free_model(monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("PM_EMPLOYEE_MODEL", raising=False)
-    monkeypatch.setenv("GITHUB_TOKEN", "t")
+    monkeypatch.setenv("GEMINI_API_KEY", "g")
     tried = []
 
     def fake_call(goal, feedback, model):
@@ -139,40 +139,40 @@ def test_falls_back_to_the_next_free_model(monkeypatch):
             raise RuntimeError("unknown model")
         return "{}"
 
-    monkeypatch.setattr(pm, "call_github_models", fake_call)
+    monkeypatch.setattr(pm, "call_gemini", fake_call)
     raw, model = pm.call_model("goal", "feedback")
     assert raw == "{}"
-    assert tried == pm.GITHUB_DEFAULT_MODELS[:2]
-    assert model == f"{pm.GITHUB_DEFAULT_MODELS[1]} (GitHub Models)"
+    assert tried == pm.GEMINI_DEFAULT_MODELS[:2]
+    assert model == pm.GEMINI_DEFAULT_MODELS[1]
 
 
-def test_github_models_request_shape(monkeypatch):
-    monkeypatch.setenv("GITHUB_TOKEN", "secret-token")
+def test_gemini_request_shape(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "secret-key")
     seen = {}
 
-    def fake_post(url, body, token):
-        seen.update(url=url, body=json.loads(body), token=token)
-        return 200, "application/json", json.dumps(
-            {"choices": [{"message": {"content": "hello"}}]})
+    def fake_post(url, body, headers):
+        seen.update(url=url, body=json.loads(body), headers=headers)
+        return 200, json.dumps({"candidates": [{"content": {"parts": [
+            {"text": "hel"}, {"text": "lo"}]}}]})
 
     monkeypatch.setattr(pm, "_post_json", fake_post)
-    assert pm.call_github_models("goal", "feedback text", "some/model") == "hello"
-    assert seen["url"] == pm.GITHUB_MODELS_URL
-    assert seen["token"] == "secret-token"
-    assert seen["body"]["model"] == "some/model"
-    assert [m["role"] for m in seen["body"]["messages"]] == ["system", "user"]
-    assert "feedback text" in seen["body"]["messages"][1]["content"]
+    assert pm.call_gemini("goal", "feedback text", "gemini-x") == "hello"
+    assert seen["url"].endswith("/models/gemini-x:generateContent")
+    assert seen["headers"]["x-goog-api-key"] == "secret-key"
+    assert "secret-key" not in seen["url"]
+    assert "feedback text" in seen["body"]["contents"][0]["parts"][0]["text"]
+    assert seen["body"]["system_instruction"]["parts"][0]["text"] == pm.SYSTEM_PROMPT
 
 
-def test_non_json_answer_is_reported_not_crashed(monkeypatch):
-    monkeypatch.setenv("GITHUB_TOKEN", "t")
-    monkeypatch.setattr(pm, "_post_json", lambda *a: (200, "text/plain", "OK"))
+def test_unexpected_answer_is_reported_not_crashed(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "g")
+    monkeypatch.setattr(pm, "_post_json", lambda *a: (200, "OK"))
     with pytest.raises(RuntimeError, match="unexpected answer"):
-        pm.call_github_models("goal", "feedback", "some/model")
+        pm.call_gemini("goal", "feedback", "gemini-x")
 
 
 def test_error_status_is_reported(monkeypatch):
-    monkeypatch.setenv("GITHUB_TOKEN", "t")
-    monkeypatch.setattr(pm, "_post_json", lambda *a: (404, "application/json", "no such model"))
+    monkeypatch.setenv("GEMINI_API_KEY", "g")
+    monkeypatch.setattr(pm, "_post_json", lambda *a: (404, "no such model"))
     with pytest.raises(RuntimeError, match="404"):
-        pm.call_github_models("goal", "feedback", "some/model")
+        pm.call_gemini("goal", "feedback", "gemini-x")

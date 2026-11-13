@@ -11,12 +11,12 @@ and writes a Markdown brief to reports/ containing:
 Every evidence quote is checked against the original feedback. A quote the
 model did not copy word for word is flagged in the brief, not hidden.
 
-The AI model comes from GitHub Models, which is free and needs no API key
-inside GitHub Actions. If an ANTHROPIC_API_KEY is set, Claude is used instead.
+The AI model is Google's Gemini on its free tier (GEMINI_API_KEY).
+If an ANTHROPIC_API_KEY is set, Claude is used instead.
 
 Run on GitHub: the workflow in .github/workflows/pm-employee.yml does this
                on every new feedback file and every Monday morning.
-Run locally:   python pm_employee.py   (see the README for the token it needs)
+Run locally:   python pm_employee.py   (see the README for the key it needs)
 """
 
 from __future__ import annotations
@@ -29,7 +29,6 @@ import re
 import sys
 import time
 import urllib.error
-import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -38,9 +37,9 @@ FEEDBACK_DIR = ROOT / "feedback"
 REPORTS_DIR = ROOT / "reports"
 GOAL_FILE = ROOT / "goal.md"
 
-GITHUB_MODELS_URL = "https://models.github.ai/inference/chat/completions"
-# Tried in order until one answers; the catalogue of free models changes over time.
-GITHUB_DEFAULT_MODELS = ["openai/gpt-4o-mini", "openai/gpt-4.1-mini"]
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+# Tried in order until one answers; the list of free models changes over time.
+GEMINI_DEFAULT_MODELS = ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite"]
 CLAUDE_DEFAULT_MODEL = "claude-sonnet-5-5"
 MAX_TOKENS = 4000
 FEEDBACK_SUFFIXES = {".md", ".txt"}
@@ -129,86 +128,51 @@ def build_user_message(goal: str, feedback: str) -> str:
 
 
 def choose_provider() -> str | None:
-    """Claude if an Anthropic key is set, otherwise GitHub Models."""
+    """Claude if an Anthropic key is set, otherwise Gemini's free tier."""
     if os.environ.get("ANTHROPIC_API_KEY"):
         return "claude"
-    if os.environ.get("GITHUB_TOKEN"):
-        return "github"
+    if os.environ.get("GEMINI_API_KEY"):
+        return "gemini"
     return None
 
 
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    """Stop urllib from silently turning a redirected POST into a GET."""
-
-    def redirect_request(self, *args, **kwargs):
-        return None
-
-
-def _post_json(url: str, body: bytes, token: str) -> tuple[int, str, str]:
-    """POST and return (status, content type, text), following redirects
-    as POSTs and only to GitHub's own hosts, so the token never leaves GitHub."""
-    opener = urllib.request.build_opener(_NoRedirect)
-    for _ in range(4):
-        request = urllib.request.Request(
-            url,
-            data=body,
-            method="POST",
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json",
-                "Accept": "application/vnd.github+json",
-                "X-GitHub-Api-Version": "2022-11-28",
-                "User-Agent": "pm-employee-workflow",
-            },
-        )
-        try:
-            with opener.open(request, timeout=120) as response:
-                kind = response.headers.get("Content-Type", "unknown")
-                return response.status, kind, response.read().decode("utf-8", "replace")
-        except urllib.error.HTTPError as error:
-            if error.code in (301, 302, 303, 307, 308):
-                target = urllib.parse.urljoin(url, error.headers.get("Location", ""))
-                host = urllib.parse.urlparse(target).hostname or ""
-                if not (target.startswith("https://") and
-                        (host.endswith(".github.ai") or host.endswith(".github.com")
-                         or host in ("github.ai", "github.com"))):
-                    raise RuntimeError(
-                        f"GitHub Models redirected to an unexpected address: {target}"
-                    ) from error
-                print(f"Redirected to {target}", file=sys.stderr)
-                url = target
-                continue
-            kind = error.headers.get("Content-Type", "unknown")
-            return error.code, kind, error.read().decode("utf-8", "replace")
-    raise RuntimeError("GitHub Models redirected too many times.")
+def _post_json(url: str, body: bytes, headers: dict) -> tuple[int, str]:
+    """POST and return (status, text). Error statuses are returned, not raised."""
+    request = urllib.request.Request(url, data=body, method="POST", headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=120) as response:
+            return response.status, response.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as error:
+        return error.code, error.read().decode("utf-8", "replace")
 
 
-def call_github_models(goal: str, feedback: str, model: str) -> str:
-    """Ask one GitHub Models model. Free inside GitHub Actions."""
+def call_gemini(goal: str, feedback: str, model: str) -> str:
+    """Ask one Gemini model through Google's API. Free tier, needs GEMINI_API_KEY."""
     body = json.dumps({
-        "model": model,
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": build_user_message(goal, feedback)},
-        ],
+        "system_instruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+        "contents": [{"parts": [{"text": build_user_message(goal, feedback)}]}],
     }).encode("utf-8")
-    token = os.environ["GITHUB_TOKEN"]
+    headers = {
+        "x-goog-api-key": os.environ["GEMINI_API_KEY"],
+        "Content-Type": "application/json",
+    }
+    url = GEMINI_URL.format(model=model)
 
     for attempt in (1, 2):
-        status, kind, text = _post_json(GITHUB_MODELS_URL, body, token)
+        status, text = _post_json(url, body, headers)
         if status in (429, 500, 502, 503) and attempt == 1:
             time.sleep(30)  # rate limit or a brief outage: wait, try once more
             continue
         if status != 200:
-            raise RuntimeError(f"GitHub Models returned {status} for {model}: {text[:300]}")
+            raise RuntimeError(f"Gemini returned {status} for {model}: {text[:300]}")
         try:
-            return json.loads(text)["choices"][0]["message"]["content"]
-        except (ValueError, KeyError, IndexError, TypeError) as error:
+            parts = json.loads(text)["candidates"][0]["content"]["parts"]
+            return "".join(part.get("text", "") for part in parts)
+        except (ValueError, KeyError, IndexError, TypeError, AttributeError) as error:
             raise RuntimeError(
-                f"GitHub Models gave an unexpected answer for {model} "
-                f"(status {status}, type {kind}): {text[:300]!r}"
+                f"Gemini gave an unexpected answer for {model}: {text[:300]!r}"
             ) from error
-    raise RuntimeError(f"GitHub Models kept returning errors for {model}.")
+    raise RuntimeError(f"Gemini kept returning errors for {model}.")
 
 
 def call_claude(goal: str, feedback: str, model: str) -> str:
@@ -232,11 +196,11 @@ def call_model(goal: str, feedback: str) -> tuple[str, str]:
         model = chosen or CLAUDE_DEFAULT_MODEL
         return call_claude(goal, feedback, model), model
 
-    models = [chosen] if chosen else GITHUB_DEFAULT_MODELS
+    models = [chosen] if chosen else GEMINI_DEFAULT_MODELS
     last_error: Exception | None = None
     for model in models:
         try:
-            return call_github_models(goal, feedback, model), f"{model} (GitHub Models)"
+            return call_gemini(goal, feedback, model), model
         except RuntimeError as error:
             last_error = error
             print(f"{error}", file=sys.stderr)
@@ -420,9 +384,9 @@ def main(argv: list[str] | None = None) -> int:
     mock_reply = Path(args.mock).read_text(encoding="utf-8") if args.mock else None
 
     if mock_reply is None and choose_provider() is None:
-        print("No AI access found. Inside GitHub Actions the workflow supplies "
-              "GITHUB_TOKEN. Locally, set GITHUB_TOKEN or ANTHROPIC_API_KEY, "
-              "or use --mock.", file=sys.stderr)
+        print("No AI key found. Add GEMINI_API_KEY (free) or ANTHROPIC_API_KEY "
+              "as a repository secret, or export one locally, or use --mock.",
+              file=sys.stderr)
         return 2
 
     files = pending_feedback(args.all)
